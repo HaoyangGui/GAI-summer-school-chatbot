@@ -197,17 +197,42 @@ class StudyBuddyBot:
 
         return messages
     def _refusal(self, topic: str) -> str:
-        message = self.refusal.get("message", "I can only help with study-related requests.")
-        redirect = self.refusal.get("redirect", "Please give me a study topic or assignment.")
-        allowed = ", ".join(self.scope.get("allowed_topics", []))
+        # Prefer configurable coaching templates from config when available
+        coaching_with_topic = self.refusal.get("coaching_with_topic")
+        coaching_generic = self.refusal.get("coaching_generic")
+        dishonest_refusal = self.refusal.get("dishonest_refusal")
+        if topic and coaching_with_topic:
+            return coaching_with_topic
+        if (not topic) and coaching_generic:
+            return coaching_generic
+
+        # If this is a dishonest/cheating related request, prefer the explicit dishonest refusal
+        # We detect that earlier in `_looks_off_topic` and return the refusal here if applicable.
+        # (dishonest_refusal template lives in config)
+        if dishonest_refusal:
+            return dishonest_refusal
+
+        # Fallback phrasing if config templates are missing
         if topic:
-            message = message.format(topic=topic)
-        return f"{message} {redirect} Allowed areas include: {allowed}."
+            return (
+                "I can't do that request for you — that's outside my study-help role. "
+                "But I can walk you through the problem step by step so you can solve it yourself. "
+                "Want to share the first question and we can work on it together?"
+            )
+        return (
+            "I can't do that — I'm here to help you study, not complete work for you. "
+            "However I can guide you through solving it. Please give me a study question or topic to start with."
+        )
 
     def _looks_off_topic(self, normalized: str) -> bool:
         study_intent_words = set(self.scope.get("allowed_keywords", [])) | STUDY_INTENT_WORDS
         if self._contains_any(normalized, study_intent_words):
             return False
+        # dishonest keywords (cheating/homework requests) should be refused explicitly
+        if self._contains_any(normalized, self.scope.get("dishonest_keywords", [])):
+            # set a marker in state.profile so _refusal can pick up dishonest_refusal template
+            self.state.profile["last_was_dishonest"] = "1"
+            return True
         if self._contains_any(normalized, self.scope.get("off_topic_keywords", [])):
             return True
         return self._contains_any(normalized, REQUEST_WORDS)
