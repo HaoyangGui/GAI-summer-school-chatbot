@@ -108,11 +108,21 @@ class StudyBuddyBot:
             self._save_state()
             return "Conversation reset. What do you want to study next?"
 
-        if self._looks_off_topic(normalized):
-            # For off-topic requests return this exact refusal string
-            return "I can help with studying, but I need a bit more detail. What topic should we work on?"
-
+        # determine topic early so refusals can reference it
         topic = self._extract_topic(user_text) or self.state.current_topic or self._last_subject()
+
+        # refusal priority: dishonest -> off-topic -> proceed
+        if self._is_dishonest(normalized):
+            # explicit dishonest refusal template from config (or fallback)
+            return self.refusal.get("dishonest_refusal") or (
+                "I can't help with requests that would violate academic honesty. "
+                "I can, however, help you learn the material and walk through problems step by step."
+            )
+        if self._is_off_topic(normalized):
+            # off-topic: prefer coaching templates (with topic or generic) via _refusal
+            focus = topic or self._off_topic_focus(normalized)
+            return self._refusal(topic=focus, is_dishonest=False)
+
         if topic:
             self.state.current_topic = topic
 
@@ -196,7 +206,7 @@ class StudyBuddyBot:
                 messages.append({"role": role, "content": content})
 
         return messages
-    def _refusal(self, topic: str) -> str:
+    def _refusal(self, topic: str, is_dishonest: bool = False) -> str:
         # Prefer configurable coaching templates from config when available
         coaching_with_topic = self.refusal.get("coaching_with_topic")
         coaching_generic = self.refusal.get("coaching_generic")
@@ -207,9 +217,7 @@ class StudyBuddyBot:
             return coaching_generic
 
         # If this is a dishonest/cheating related request, prefer the explicit dishonest refusal
-        # We detect that earlier in `_looks_off_topic` and return the refusal here if applicable.
-        # (dishonest_refusal template lives in config)
-        if dishonest_refusal:
+        if is_dishonest and dishonest_refusal:
             return dishonest_refusal
 
         # Fallback phrasing if config templates are missing
@@ -225,14 +233,16 @@ class StudyBuddyBot:
         )
 
     def _looks_off_topic(self, normalized: str) -> bool:
+        # legacy combined check: prefer using _is_dishonest and _is_off_topic
+        return self._is_off_topic(normalized)
+
+    def _is_dishonest(self, normalized: str) -> bool:
+        return self._contains_any(normalized, self.scope.get("dishonest_keywords", []))
+
+    def _is_off_topic(self, normalized: str) -> bool:
         study_intent_words = set(self.scope.get("allowed_keywords", [])) | STUDY_INTENT_WORDS
         if self._contains_any(normalized, study_intent_words):
             return False
-        # dishonest keywords (cheating/homework requests) should be refused explicitly
-        if self._contains_any(normalized, self.scope.get("dishonest_keywords", [])):
-            # set a marker in state.profile so _refusal can pick up dishonest_refusal template
-            self.state.profile["last_was_dishonest"] = "1"
-            return True
         if self._contains_any(normalized, self.scope.get("off_topic_keywords", [])):
             return True
         return self._contains_any(normalized, REQUEST_WORDS)
